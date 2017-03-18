@@ -138,7 +138,18 @@ BEGIN
         RAISE EXCEPTION '[audit.if_modified_func] - Trigger func added as trigger for unhandled case: %, %',TG_OP, TG_LEVEL;
         RETURN NULL;
     END IF;
-    INSERT INTO audit.logged_actions VALUES (audit_row.*);
+
+    EXECUTE FORMAT(
+        'CREATE TABLE IF NOT EXISTS audit.logged_actions_%s_%s_%s (LIKE audit.logged_actions)',
+        TO_CHAR(CURRENT_TIMESTAMP, 'YYYY'),
+        TO_CHAR(CURRENT_TIMESTAMP, 'MM'),
+        TO_CHAR(CURRENT_TIMESTAMP, 'DD'));
+    EXECUTE FORMAT('INSERT INTO audit.logged_actions_%s_%s_%s VALUES (($1).*)',
+        TO_CHAR(CURRENT_TIMESTAMP, 'YYYY'),
+        TO_CHAR(CURRENT_TIMESTAMP, 'MM'),
+        TO_CHAR(CURRENT_TIMESTAMP, 'DD'))
+        USING audit_row;
+
     RETURN NULL;
 END;
 $body$
