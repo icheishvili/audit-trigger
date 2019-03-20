@@ -68,7 +68,7 @@ CREATE TABLE audit.logged_actions (
   statement_only BOOLEAN NOT NULL
 );
 
-ALTER TABLE audit.logged_actions SET (autovacuum_enabled = false, toast.autovacuum_enabled = false);
+ALTER TABLE audit.logged_actions SET (AUTOVACUUM_ENABLED = FALSE, TOAST.AUTOVACUUM_ENABLED = FALSE);
 
 COMMENT ON TABLE audit.logged_actions IS 'History of auditable actions on audited tables, from audit.if_modified_func()';
 COMMENT ON COLUMN audit.logged_actions.event_id IS 'Unique identifier for each auditable event';
@@ -91,6 +91,7 @@ COMMENT ON COLUMN audit.logged_actions.statement_only IS '''t'' if audit event i
 
 CREATE OR REPLACE FUNCTION audit.if_modified_func() RETURNS TRIGGER AS $body$
 DECLARE
+  audit_table_name VARCHAR;
   audit_row audit.logged_actions;
   include_values BOOLEAN;
   log_diffs BOOLEAN;
@@ -148,17 +149,18 @@ BEGIN
     RETURN NULL;
   END IF;
 
-  EXECUTE FORMAT(
-    'CREATE TABLE IF NOT EXISTS audit.logged_actions_%s_%s_%s (LIKE audit.logged_actions)',
+  audit_table_name = FORMAT(
+    'audit.logged_actions_%s_%s_%s',
     TO_CHAR(CURRENT_TIMESTAMP, 'YYYY'),
     TO_CHAR(CURRENT_TIMESTAMP, 'MM'),
     TO_CHAR(CURRENT_TIMESTAMP, 'DD')
   );
-  EXECUTE FORMAT('INSERT INTO audit.logged_actions_%s_%s_%s VALUES (($1).*)',
-    TO_CHAR(CURRENT_TIMESTAMP, 'YYYY'),
-    TO_CHAR(CURRENT_TIMESTAMP, 'MM'),
-    TO_CHAR(CURRENT_TIMESTAMP, 'DD')
-  ) USING audit_row;
+
+  IF TO_REGCLASS(audit_table_name) IS NULL THEN
+    EXECUTE FORMAT('CREATE TABLE %s (LIKE audit.logged_actions)', audit_table_name);
+    EXECUTE FORMAT('ALTER TABLE %s SET (AUTOVACUUM_ENABLED = FALSE, TOAST.AUTOVACUUM_ENABLED = FALSE)', audit_table_name);
+  END IF;
+  EXECUTE FORMAT('INSERT INTO %s VALUES (($1).*)', audit_table_name) USING audit_row;
 
   RETURN NULL;
 END;
