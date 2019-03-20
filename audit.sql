@@ -4,7 +4,7 @@
 -- This file should be generic and not depend on application roles or structures,
 -- as it's being listed here:
 --
---    https://wiki.postgresql.org/wiki/Audit_trigger_91plus    
+--    https://wiki.postgresql.org/wiki/Audit_trigger_91plus
 --
 -- This trigger was originally based on
 --   http://wiki.postgresql.org/wiki/Audit_trigger
@@ -12,11 +12,23 @@
 --
 -- Should really be converted into a relocatable EXTENSION, with control and upgrade files.
 
-CREATE EXTENSION IF NOT EXISTS hstore;
+CREATE OR REPLACE FUNCTION JSONB_SUBTRACT(v1 JSONB, v2 JSONB)
+RETURNS JSONB AS $$
+DECLARE
+  result JSONB;
+  v RECORD;
+BEGIN
+  result = v1;
+  FOR v IN SELECT * FROM JSONB_EACH(v2) LOOP
+    IF result->v.key IS NOT DISTINCT FROM v.value
+      THEN result = result - v.key;
+    END IF;
+  END LOOP;
+  RETURN result;
+END;
+$$ LANGUAGE PLPGSQL;
 
-CREATE SCHEMA audit;
-REVOKE ALL ON SCHEMA audit FROM public;
-
+CREATE SCHEMA IF NOT EXISTS audit;
 COMMENT ON SCHEMA audit IS 'Out-of-table audit/history logging tables and trigger functions';
 
 --
@@ -29,34 +41,34 @@ COMMENT ON SCHEMA audit IS 'Out-of-table audit/history logging tables and trigge
 -- inserts.
 --
 -- Every index you add has a big impact too, so avoid adding indexes to the
--- audit table unless you REALLY need them. The hstore GIST indexes are
--- particularly expensive.
+-- audit table unless you REALLY need them
 --
 -- It is sometimes worth copying the audit table, or a coarse subset of it that
 -- you're interested in, into a temporary table where you CREATE any useful
 -- indexes and do your analysis.
 --
+DROP TABLE IF EXISTS audit.logged_actions;
 CREATE TABLE audit.logged_actions (
-    event_id bigserial primary key,
-    schema_name text not null,
-    table_name text not null,
-    relid oid not null,
-    session_user_name text,
-    action_tstamp_tx TIMESTAMP WITH TIME ZONE NOT NULL,
-    action_tstamp_stm TIMESTAMP WITH TIME ZONE NOT NULL,
-    action_tstamp_clk TIMESTAMP WITH TIME ZONE NOT NULL,
-    transaction_id bigint,
-    application_name text,
-    client_addr inet,
-    client_port integer,
-    client_query text,
-    action TEXT NOT NULL CHECK (action IN ('I','D','U', 'T')),
-    row_data hstore,
-    changed_fields hstore,
-    statement_only boolean not null
+  event_id BIGSERIAL PRIMARY KEY,
+  schema_name TEXT NOT NULL,
+  table_name TEXT NOT NULL,
+  relid OID NOT NULL,
+  session_user_name text,
+  action_tstamp_tx TIMESTAMP WITH TIME ZONE NOT NULL,
+  action_tstamp_stm TIMESTAMP WITH TIME ZONE NOT NULL,
+  action_tstamp_clk TIMESTAMP WITH TIME ZONE NOT NULL,
+  transaction_id BIGINT,
+  application_name TEXT,
+  client_addr INET,
+  client_port INTEGER,
+  client_query TEXT,
+  action TEXT NOT NULL CHECK (action IN ('I', 'D', 'U', 'T')),
+  row_data JSONB,
+  changed_fields JSONB,
+  statement_only BOOLEAN NOT NULL
 );
 
-REVOKE ALL ON audit.logged_actions FROM public;
+ALTER TABLE audit.logged_actions SET (autovacuum_enabled = false, toast.autovacuum_enabled = false);
 
 COMMENT ON TABLE audit.logged_actions IS 'History of auditable actions on audited tables, from audit.if_modified_func()';
 COMMENT ON COLUMN audit.logged_actions.event_id IS 'Unique identifier for each auditable event';
@@ -77,86 +89,83 @@ COMMENT ON COLUMN audit.logged_actions.row_data IS 'Record value. Null for state
 COMMENT ON COLUMN audit.logged_actions.changed_fields IS 'New values of fields changed by UPDATE. Null except for row-level UPDATE events.';
 COMMENT ON COLUMN audit.logged_actions.statement_only IS '''t'' if audit event is from an FOR EACH STATEMENT trigger, ''f'' for FOR EACH ROW';
 
-CREATE INDEX logged_actions_relid_idx ON audit.logged_actions(relid);
-CREATE INDEX logged_actions_action_tstamp_tx_stm_idx ON audit.logged_actions(action_tstamp_stm);
-CREATE INDEX logged_actions_action_idx ON audit.logged_actions(action);
-
 CREATE OR REPLACE FUNCTION audit.if_modified_func() RETURNS TRIGGER AS $body$
 DECLARE
-    audit_row audit.logged_actions;
-    include_values boolean;
-    log_diffs boolean;
-    h_old hstore;
-    h_new hstore;
-    excluded_cols text[] = ARRAY[]::text[];
+  audit_row audit.logged_actions;
+  include_values BOOLEAN;
+  log_diffs BOOLEAN;
+  j_old JSONB;
+  j_new JSONB;
+  excluded_cols TEXT[] = ARRAY[]::TEXT[];
 BEGIN
-    IF TG_WHEN <> 'AFTER' THEN
-        RAISE EXCEPTION 'audit.if_modified_func() may only run as an AFTER trigger';
+  IF TG_WHEN <> 'AFTER' THEN
+    RAISE EXCEPTION 'audit.if_modified_func() may only run as an AFTER trigger';
+  END IF;
+
+  audit_row = ROW(
+    NEXTVAL('audit.logged_actions_event_id_seq'), -- event_id
+    TG_TABLE_SCHEMA::TEXT,                        -- schema_name
+    TG_TABLE_NAME::TEXT,                          -- table_name
+    TG_RELID,                                     -- relation OID for much quicker searches
+    session_user::TEXT,                           -- session_user_name
+    CURRENT_TIMESTAMP,                            -- action_tstamp_tx
+    STATEMENT_TIMESTAMP(),                        -- action_tstamp_stm
+    CLOCK_TIMESTAMP(),                            -- action_tstamp_clk
+    TXID_CURRENT(),                               -- transaction ID
+    CURRENT_SETTING('application_name'),          -- client application
+    INET_CLIENT_ADDR(),                           -- client_addr
+    INET_CLIENT_PORT(),                           -- client_port
+    CURRENT_QUERY(),                              -- top-level query or queries (if multistatement) from client
+    SUBSTRING(TG_OP, 1, 1),                       -- action
+    NULL,                                         -- row_data
+    NULL,                                         -- changed_fields
+    'f'                                           -- statement_only
+  );
+
+  IF NOT TG_ARGV[0]::BOOLEAN IS DISTINCT FROM 'f'::BOOLEAN THEN
+    audit_row.client_query = NULL;
+  END IF;
+
+  IF TG_ARGV[1] IS NOT NULL THEN
+    excluded_cols = TG_ARGV[1]::TEXT[];
+  END IF;
+
+  IF (TG_OP = 'UPDATE' AND TG_LEVEL = 'ROW') THEN
+    audit_row.row_data = TO_JSONB(OLD) - excluded_cols;
+    audit_row.changed_fields = JSONB_SUBTRACT(TO_JSONB(NEW), audit_row.row_data) - excluded_cols;
+    IF audit_row.changed_fields = '{}'::JSONB THEN
+      -- All changed fields are ignored. Skip this update.
+      RETURN NULL;
     END IF;
-
-    audit_row = ROW(
-        nextval('audit.logged_actions_event_id_seq'), -- event_id
-        TG_TABLE_SCHEMA::text,                        -- schema_name
-        TG_TABLE_NAME::text,                          -- table_name
-        TG_RELID,                                     -- relation OID for much quicker searches
-        session_user::text,                           -- session_user_name
-        current_timestamp,                            -- action_tstamp_tx
-        statement_timestamp(),                        -- action_tstamp_stm
-        clock_timestamp(),                            -- action_tstamp_clk
-        txid_current(),                               -- transaction ID
-        current_setting('application_name'),          -- client application
-        inet_client_addr(),                           -- client_addr
-        inet_client_port(),                           -- client_port
-        current_query(),                              -- top-level query or queries (if multistatement) from client
-        substring(TG_OP,1,1),                         -- action
-        NULL, NULL,                                   -- row_data, changed_fields
-        'f'                                           -- statement_only
-        );
-
-    IF NOT TG_ARGV[0]::boolean IS DISTINCT FROM 'f'::boolean THEN
-        audit_row.client_query = NULL;
-    END IF;
-
-    IF TG_ARGV[1] IS NOT NULL THEN
-        excluded_cols = TG_ARGV[1]::text[];
-    END IF;
-    
-    IF (TG_OP = 'UPDATE' AND TG_LEVEL = 'ROW') THEN
-        audit_row.row_data = hstore(OLD.*) - excluded_cols;
-        audit_row.changed_fields =  (hstore(NEW.*) - audit_row.row_data) - excluded_cols;
-        IF audit_row.changed_fields = hstore('') THEN
-            -- All changed fields are ignored. Skip this update.
-            RETURN NULL;
-        END IF;
-    ELSIF (TG_OP = 'DELETE' AND TG_LEVEL = 'ROW') THEN
-        audit_row.row_data = hstore(OLD.*) - excluded_cols;
-    ELSIF (TG_OP = 'INSERT' AND TG_LEVEL = 'ROW') THEN
-        audit_row.row_data = hstore(NEW.*) - excluded_cols;
-    ELSIF (TG_LEVEL = 'STATEMENT' AND TG_OP IN ('INSERT','UPDATE','DELETE','TRUNCATE')) THEN
-        audit_row.statement_only = 't';
-    ELSE
-        RAISE EXCEPTION '[audit.if_modified_func] - Trigger func added as trigger for unhandled case: %, %',TG_OP, TG_LEVEL;
-        RETURN NULL;
-    END IF;
-
-    EXECUTE FORMAT(
-        'CREATE TABLE IF NOT EXISTS audit.logged_actions_%s_%s_%s (LIKE audit.logged_actions)',
-        TO_CHAR(CURRENT_TIMESTAMP, 'YYYY'),
-        TO_CHAR(CURRENT_TIMESTAMP, 'MM'),
-        TO_CHAR(CURRENT_TIMESTAMP, 'DD'));
-    EXECUTE FORMAT('INSERT INTO audit.logged_actions_%s_%s_%s VALUES (($1).*)',
-        TO_CHAR(CURRENT_TIMESTAMP, 'YYYY'),
-        TO_CHAR(CURRENT_TIMESTAMP, 'MM'),
-        TO_CHAR(CURRENT_TIMESTAMP, 'DD'))
-        USING audit_row;
-
+  ELSIF (TG_OP = 'DELETE' AND TG_LEVEL = 'ROW') THEN
+    audit_row.row_data = TO_JSONB(OLD) - excluded_cols;
+  ELSIF (TG_OP = 'INSERT' AND TG_LEVEL = 'ROW') THEN
+    audit_row.row_data = TO_JSONB(NEW) - excluded_cols;
+  ELSIF (TG_LEVEL = 'STATEMENT' AND TG_OP IN ('INSERT','UPDATE','DELETE','TRUNCATE')) THEN
+    audit_row.statement_only = 't';
+  ELSE
+    RAISE EXCEPTION '[audit.if_modified_func] - Trigger func added as trigger for unhandled case: %, %',TG_OP, TG_LEVEL;
     RETURN NULL;
+  END IF;
+
+  EXECUTE FORMAT(
+    'CREATE TABLE IF NOT EXISTS audit.logged_actions_%s_%s_%s (LIKE audit.logged_actions)',
+    TO_CHAR(CURRENT_TIMESTAMP, 'YYYY'),
+    TO_CHAR(CURRENT_TIMESTAMP, 'MM'),
+    TO_CHAR(CURRENT_TIMESTAMP, 'DD')
+  );
+  EXECUTE FORMAT('INSERT INTO audit.logged_actions_%s_%s_%s VALUES (($1).*)',
+    TO_CHAR(CURRENT_TIMESTAMP, 'YYYY'),
+    TO_CHAR(CURRENT_TIMESTAMP, 'MM'),
+    TO_CHAR(CURRENT_TIMESTAMP, 'DD')
+  ) USING audit_row;
+
+  RETURN NULL;
 END;
 $body$
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, public;
-
 
 COMMENT ON FUNCTION audit.if_modified_func() IS $body$
 Track changes to a table at the statement and/or row level.
@@ -191,41 +200,40 @@ $body$;
 
 
 
-CREATE OR REPLACE FUNCTION audit.audit_table(target_table regclass, audit_rows boolean, audit_query_text boolean, ignored_cols text[]) RETURNS void AS $body$
+CREATE OR REPLACE FUNCTION audit.audit_table(target_table REGCLASS, audit_rows BOOLEAN, audit_query_text BOOLEAN, ignored_cols TEXT[]) RETURNS VOID AS $body$
 DECLARE
-  stm_targets text = 'INSERT OR UPDATE OR DELETE OR TRUNCATE';
-  _q_txt text;
-  _ignored_cols_snip text = '';
+  stm_targets TEXT = 'INSERT OR UPDATE OR DELETE OR TRUNCATE';
+  _q_txt TEXT;
+  _ignored_cols_snip TEXT = '';
 BEGIN
-    EXECUTE 'DROP TRIGGER IF EXISTS audit_trigger_row ON ' || quote_ident(target_table::TEXT);
-    EXECUTE 'DROP TRIGGER IF EXISTS audit_trigger_stm ON ' || quote_ident(target_table::TEXT);
+  EXECUTE 'DROP TRIGGER IF EXISTS audit_trigger_row ON ' || QUOTE_IDENT(target_table::TEXT);
+  EXECUTE 'DROP TRIGGER IF EXISTS audit_trigger_stm ON ' || QUOTE_IDENT(target_table::TEXT);
 
-    IF audit_rows THEN
-        IF array_length(ignored_cols,1) > 0 THEN
-            _ignored_cols_snip = ', ' || quote_literal(ignored_cols);
-        END IF;
-        _q_txt = 'CREATE TRIGGER audit_trigger_row AFTER INSERT OR UPDATE OR DELETE ON ' || 
-                 quote_ident(target_table::TEXT) || 
-                 ' FOR EACH ROW EXECUTE PROCEDURE audit.if_modified_func(' ||
-                 quote_literal(audit_query_text) || _ignored_cols_snip || ');';
-        RAISE NOTICE '%',_q_txt;
-        EXECUTE _q_txt;
-        stm_targets = 'TRUNCATE';
-    ELSE
+  IF audit_rows THEN
+    IF ARRAY_LENGTH(ignored_cols,1) > 0 THEN
+        _ignored_cols_snip = ', ' || QUOTE_LITERAL(ignored_cols);
     END IF;
-
-    _q_txt = 'CREATE TRIGGER audit_trigger_stm AFTER ' || stm_targets || ' ON ' ||
-             target_table ||
-             ' FOR EACH STATEMENT EXECUTE PROCEDURE audit.if_modified_func('||
-             quote_literal(audit_query_text) || ');';
-    RAISE NOTICE '%',_q_txt;
+    _q_txt = 'CREATE TRIGGER audit_trigger_row AFTER INSERT OR UPDATE OR DELETE ON ' ||
+             QUOTE_IDENT(target_table::TEXT) ||
+             ' FOR EACH ROW EXECUTE PROCEDURE audit.if_modified_func(' ||
+             QUOTE_LITERAL(audit_query_text) || _ignored_cols_snip || ');';
+    RAISE NOTICE '%', _q_txt;
     EXECUTE _q_txt;
+    stm_targets = 'TRUNCATE';
+  ELSE
+  END IF;
 
+  _q_txt = 'CREATE TRIGGER audit_trigger_stm AFTER ' || stm_targets || ' ON ' ||
+           target_table ||
+           ' FOR EACH STATEMENT EXECUTE PROCEDURE audit.if_modified_func('||
+           QUOTE_LITERAL(audit_query_text) || ');';
+  RAISE NOTICE '%',_q_txt;
+  EXECUTE _q_txt;
 END;
 $body$
 language 'plpgsql';
 
-COMMENT ON FUNCTION audit.audit_table(regclass, boolean, boolean, text[]) IS $body$
+COMMENT ON FUNCTION audit.audit_table(REGCLASS, BOOLEAN, BOOLEAN, TEXT[]) IS $body$
 Add auditing support to a table.
 
 Arguments:
@@ -236,17 +244,17 @@ Arguments:
 $body$;
 
 -- Pg doesn't allow variadic calls with 0 params, so provide a wrapper
-CREATE OR REPLACE FUNCTION audit.audit_table(target_table regclass, audit_rows boolean, audit_query_text boolean) RETURNS void AS $body$
-SELECT audit.audit_table($1, $2, $3, ARRAY[]::text[]);
+CREATE OR REPLACE FUNCTION audit.audit_table(target_table REGCLASS, audit_rows BOOLEAN, audit_query_text BOOLEAN) RETURNS VOID AS $body$
+SELECT audit.audit_table($1, $2, $3, ARRAY[]::TEXT[]);
 $body$ LANGUAGE SQL;
 
 -- And provide a convenience call wrapper for the simplest case
 -- of row-level logging with no excluded cols and query logging enabled.
 --
-CREATE OR REPLACE FUNCTION audit.audit_table(target_table regclass) RETURNS void AS $body$
+CREATE OR REPLACE FUNCTION audit.audit_table(target_table REGCLASS) RETURNS VOID AS $body$
 SELECT audit.audit_table($1, BOOLEAN 't', BOOLEAN 't');
 $body$ LANGUAGE 'sql';
 
-COMMENT ON FUNCTION audit.audit_table(regclass) IS $body$
+COMMENT ON FUNCTION audit.audit_table(REGCLASS) IS $body$
 Add auditing support to the given table. Row-level changes will be logged with full client query text. No cols are ignored.
 $body$;
