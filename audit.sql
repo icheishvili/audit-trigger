@@ -209,15 +209,15 @@ DECLARE
   _q_txt TEXT;
   _ignored_cols_snip TEXT = '';
 BEGIN
-  EXECUTE 'DROP TRIGGER IF EXISTS audit_trigger_row ON ' || QUOTE_IDENT(target_table::TEXT);
-  EXECUTE 'DROP TRIGGER IF EXISTS audit_trigger_stm ON ' || QUOTE_IDENT(target_table::TEXT);
+  EXECUTE 'DROP TRIGGER IF EXISTS audit_trigger_row ON ' || target_table;
+  EXECUTE 'DROP TRIGGER IF EXISTS audit_trigger_stm ON ' || target_table;
 
   IF audit_rows THEN
     IF ARRAY_LENGTH(ignored_cols,1) > 0 THEN
         _ignored_cols_snip = ', ' || QUOTE_LITERAL(ignored_cols);
     END IF;
     _q_txt = 'CREATE TRIGGER audit_trigger_row AFTER INSERT OR UPDATE OR DELETE ON ' ||
-             QUOTE_IDENT(target_table::TEXT) ||
+             target_table ||
              ' FOR EACH ROW EXECUTE PROCEDURE audit.if_modified_func(' ||
              QUOTE_LITERAL(audit_query_text) || _ignored_cols_snip || ');';
     RAISE NOTICE '%', _q_txt;
