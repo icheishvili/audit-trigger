@@ -88,7 +88,6 @@ COMMENT ON COLUMN audit.logged_actions.action IS 'Action type; I = insert, D = d
 COMMENT ON COLUMN audit.logged_actions.row_data IS 'Record value. Null for statement-level trigger. For INSERT this is the new tuple. For DELETE and UPDATE it is the old tuple.';
 COMMENT ON COLUMN audit.logged_actions.changed_fields IS 'New values of fields changed by UPDATE. Null except for row-level UPDATE events.';
 COMMENT ON COLUMN audit.logged_actions.statement_only IS '''t'' if audit event is from an FOR EACH STATEMENT trigger, ''f'' for FOR EACH ROW';
-
 CREATE OR REPLACE FUNCTION audit.if_modified_func() RETURNS TRIGGER AS $body$
 DECLARE
   audit_table_name VARCHAR;
@@ -98,6 +97,7 @@ DECLARE
   j_old JSONB;
   j_new JSONB;
   excluded_cols TEXT[] = ARRAY[]::TEXT[];
+  inserted_event_id INTEGER;
 BEGIN
   IF TG_WHEN <> 'AFTER' THEN
     RAISE EXCEPTION 'audit.if_modified_func() may only run as an AFTER trigger';
@@ -160,7 +160,8 @@ BEGIN
     EXECUTE FORMAT('CREATE TABLE %s (LIKE audit.logged_actions)', audit_table_name);
     EXECUTE FORMAT('ALTER TABLE %s SET (AUTOVACUUM_ENABLED = FALSE, TOAST.AUTOVACUUM_ENABLED = FALSE)', audit_table_name);
   END IF;
-  EXECUTE FORMAT('INSERT INTO %s VALUES (($1).*)', audit_table_name) USING audit_row;
+  EXECUTE FORMAT('INSERT INTO %s VALUES (($1).*) RETURNING event_id', audit_table_name) INTO inserted_event_id USING audit_row;
+  PERFORM PG_NOTIFY('audit_replication', JSONB_BUILD_OBJECT('audit_table', audit_table_name, 'event_id', inserted_event_id)::TEXT);
 
   RETURN NULL;
 END;
