@@ -88,7 +88,7 @@ end
 def handle_update(table_name, row_data, changed_fields)
   table = $connection.escape_identifier(table_name)
   id = escape(row_data['id'])
-  pairs = row_data.map do |k, v|
+  pairs = changed_fields.map do |k, v|
     [$connection.escape_identifier(k), escape(v)].join(' = ')
   end.join(', ')
 
