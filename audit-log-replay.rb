@@ -60,15 +60,15 @@ def escape(value)
   elsif value.is_a?(Float)
     value
   elsif value.is_a?(Array)
-    if value.all? { |sub_value| sub_value.is_a?(Integer) || sub_value.is_a?(String) }
+    if value.all? { |sub_value| sub_value.is_a?(Integer) || sub_value.is_a?(String) || sub_value.is_a?(TrueClass) || sub_value.is_a?(FalseClass) }
       escape_pg_array(value)
     else
       escape(JSON.dump(value))
     end
   elsif value.is_a?(TrueClass)
-    "'t'"
+    "true"
   elsif value.is_a?(FalseClass)
-    "'f'"
+    "false"
   elsif value.is_a?(Hash)
     escape(JSON.dump(value))
   else
