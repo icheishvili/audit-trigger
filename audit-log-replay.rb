@@ -21,9 +21,9 @@ OptionParser.new do |opts|
 end.parse!
 
 $connection = PG.connect(options[:connection])
-$connection.execute('LISTEN audit_replication')
+$connection.('LISTEN audit_replication')
 at_exit do
-  $connection.execute('UNLISTEN *')
+  $connection.exec('UNLISTEN *')
 end
 
 def handle_event(row)
@@ -151,7 +151,7 @@ loop do
         WHERE event_id = $1
       SQL
       params = [data['event_id']]
-      row = $connection.execute(query, params).to_a.first
+      row = $connection.exec(query, params).to_a.first
       if row
         handle_event(row)
         STDERR.printf("INFO: sync event for payload: %s\n", payload)
