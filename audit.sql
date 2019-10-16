@@ -49,7 +49,7 @@ COMMENT ON SCHEMA audit IS 'Out-of-table audit/history logging tables and trigge
 --
 DROP TABLE IF EXISTS audit.logged_actions;
 CREATE TABLE audit.logged_actions (
-  event_id BIGSERIAL PRIMARY KEY,
+  event_id BIGINT,
   schema_name TEXT NOT NULL,
   table_name TEXT NOT NULL,
   relid OID NOT NULL,
@@ -70,6 +70,7 @@ CREATE TABLE audit.logged_actions (
                               
 ALTER TABLE audit.logged_actions ADD CONSTRAINT cx__logged_actions__action CHECK (action IN ('I', 'D',  'U', 'T'));
 CREATE INDEX ix__logged_actions__event_id ON audit.logged_actions (event_id);
+CREATE SEQUENCE IF NOT EXISTS audit.logged_actions_event_id_seq;
 
 ALTER TABLE audit.logged_actions SET (AUTOVACUUM_ENABLED = FALSE, TOAST.AUTOVACUUM_ENABLED = FALSE);
 
