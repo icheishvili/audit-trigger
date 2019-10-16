@@ -97,7 +97,7 @@ DECLARE
   j_old JSONB;
   j_new JSONB;
   excluded_cols TEXT[] = ARRAY[]::TEXT[];
-  inserted_event_id INTEGER;
+  inserted_event_id BIGINT;
 BEGIN
   IF TG_WHEN <> 'AFTER' THEN
     RAISE EXCEPTION 'audit.if_modified_func() may only run as an AFTER trigger';
