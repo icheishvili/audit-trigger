@@ -69,6 +69,7 @@ CREATE TABLE audit.logged_actions (
 );
                               
 ALTER TABLE audit.logged_actions ADD CONSTRAINT cx__logged_actions__action CHECK (action IN ('I', 'D',  'U', 'T'));
+CREATE INDEX ix__logged_actions__event_id ON audit.logged_actions (event_id);
 
 ALTER TABLE audit.logged_actions SET (AUTOVACUUM_ENABLED = FALSE, TOAST.AUTOVACUUM_ENABLED = FALSE);
 
