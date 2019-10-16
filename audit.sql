@@ -161,7 +161,7 @@ BEGIN
     EXECUTE FORMAT('ALTER TABLE %s SET (AUTOVACUUM_ENABLED = FALSE, TOAST.AUTOVACUUM_ENABLED = FALSE)', audit_table_name);
   END IF;
   EXECUTE FORMAT('INSERT INTO %s VALUES (($1).*) RETURNING event_id', audit_table_name) INTO inserted_event_id USING audit_row;
-  PERFORM PG_NOTIFY('audit_replication', JSONB_BUILD_OBJECT('audit_table', audit_table_name, 'event_id', inserted_event_id)::TEXT);
+  PERFORM PG_NOTIFY('audit.logged_actions', JSONB_BUILD_OBJECT('audit_table', audit_table_name, 'event_id', inserted_event_id)::TEXT);
 
   RETURN NULL;
 END;
