@@ -62,11 +62,13 @@ CREATE TABLE audit.logged_actions (
   client_addr INET,
   client_port INTEGER,
   client_query TEXT,
-  action TEXT NOT NULL CHECK (action IN ('I', 'D', 'U', 'T')),
+  action TEXT NOT NULL,
   row_data JSONB,
   changed_fields JSONB,
   statement_only BOOLEAN NOT NULL
 );
+                              
+ALTER TABLE audit.logged_actions ADD CONSTRAINT cx__logged_actions__action CHECK (action IN ('I', 'D',  'U', 'T'));
 
 ALTER TABLE audit.logged_actions SET (AUTOVACUUM_ENABLED = FALSE, TOAST.AUTOVACUUM_ENABLED = FALSE);
 
