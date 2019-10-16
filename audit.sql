@@ -166,10 +166,6 @@ BEGIN
     );
   END IF;
   INSERT INTO audit.logged_actions VALUES (audit_row.*) RETURNING event_id INTO inserted_event_id;
-  PERFORM PG_NOTIFY('audit_logged_actions', JSONB_BUILD_OBJECT(
-    'action_tstamp_clk', audit_row.action_tstamp_clk,
-    'event_id', inserted_event_id
-  )::TEXT);
 
   RETURN NULL;
 END;
