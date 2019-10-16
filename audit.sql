@@ -151,21 +151,21 @@ BEGIN
     RETURN NULL;
   END IF;
 
-  audit_table_name = 'audit.logged_actions_' || TO_CHAR(CURRENT_TIMESTAMP, 'YYYY_MM_DD');
+  audit_table_name = 'audit.logged_actions_' || TO_CHAR(audit_row.action_tstamp_clk, 'YYYY_MM_DD');
 
   IF TO_REGCLASS(audit_table_name) IS NULL THEN
     EXECUTE FORMAT(
       'CREATE TABLE IF NOT EXISTS %s PARTITION OF audit.logged_actions FOR VALUES FROM (''%s'') TO (''%s'')',
       audit_table_name,
-      TO_CHAR(CURRENT_TIMESTAMP, 'YYYY-MM-DD'),
-      TO_CHAR(CURRENT_TIMESTAMP + INTERVAL '1 DAY', 'YYYY-MM-DD')
+      TO_CHAR(audit_row.action_tstamp_clk, 'YYYY-MM-DD'),
+      TO_CHAR(audit_row.action_tstamp_clk + INTERVAL '1 DAY', 'YYYY-MM-DD')
     );
     EXECUTE FORMAT(
       'ALTER TABLE %s SET (AUTOVACUUM_ENABLED = FALSE, TOAST.AUTOVACUUM_ENABLED = FALSE)',
       audit_table_name
     );
   END IF;
-  INSERT INTO audit.logged_actions VALUES (($1).*) RETURNING event_id INTO inserted_event_id USING audit_row;
+  INSERT INTO audit.logged_actions VALUES (audit_row.*) RETURNING event_id INTO inserted_event_id;
   PERFORM PG_NOTIFY('audit_logged_actions', JSONB_BUILD_OBJECT(
     'action_tstamp_clk', audit_row.action_tstamp_clk,
     'event_id', inserted_event_id
