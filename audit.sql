@@ -71,7 +71,6 @@ CREATE TABLE audit.logged_actions (
 ALTER TABLE audit.logged_actions ADD CONSTRAINT cx__logged_actions__action CHECK (action IN ('I', 'D',  'U', 'T'));
 CREATE INDEX ix__logged_actions__event_id ON audit.logged_actions (event_id);
 CREATE SEQUENCE IF NOT EXISTS audit.logged_actions_event_id_seq;
-ALTER TABLE audit.logged_actions SET (AUTOVACUUM_ENABLED = FALSE, TOAST.AUTOVACUUM_ENABLED = FALSE);
 
 COMMENT ON TABLE audit.logged_actions IS 'History of auditable actions on audited tables, from audit.if_modified_func()';
 COMMENT ON COLUMN audit.logged_actions.event_id IS 'Unique identifier for each auditable event';
