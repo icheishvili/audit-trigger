@@ -66,12 +66,11 @@ CREATE TABLE audit.logged_actions (
   row_data JSONB,
   changed_fields JSONB,
   statement_only BOOLEAN NOT NULL
-);
+) PARTITION BY RANGE (action_tstamp_clk);
                               
 ALTER TABLE audit.logged_actions ADD CONSTRAINT cx__logged_actions__action CHECK (action IN ('I', 'D',  'U', 'T'));
 CREATE INDEX ix__logged_actions__event_id ON audit.logged_actions (event_id);
 CREATE SEQUENCE IF NOT EXISTS audit.logged_actions_event_id_seq;
-
 ALTER TABLE audit.logged_actions SET (AUTOVACUUM_ENABLED = FALSE, TOAST.AUTOVACUUM_ENABLED = FALSE);
 
 COMMENT ON TABLE audit.logged_actions IS 'History of auditable actions on audited tables, from audit.if_modified_func()';
@@ -153,19 +152,25 @@ BEGIN
     RETURN NULL;
   END IF;
 
-  audit_table_name = FORMAT(
-    'audit.logged_actions_%s_%s_%s',
-    TO_CHAR(CURRENT_TIMESTAMP, 'YYYY'),
-    TO_CHAR(CURRENT_TIMESTAMP, 'MM'),
-    TO_CHAR(CURRENT_TIMESTAMP, 'DD')
-  );
+  audit_table_name = 'audit.logged_actions_' || TO_CHAR(CURRENT_TIMESTAMP, 'YYYY_MM_DD');
 
   IF TO_REGCLASS(audit_table_name) IS NULL THEN
-    EXECUTE FORMAT('CREATE TABLE %s (LIKE audit.logged_actions)', audit_table_name);
-    EXECUTE FORMAT('ALTER TABLE %s SET (AUTOVACUUM_ENABLED = FALSE, TOAST.AUTOVACUUM_ENABLED = FALSE)', audit_table_name);
+    EXECUTE FORMAT(
+      'CREATE TABLE IF NOT EXISTS %s PARTITION OF audit.logged_actions FOR VALUES FROM (''%s'') TO (''%s'')',
+      audit_table_name,
+      TO_CHAR(CURRENT_TIMESTAMP, 'YYYY-MM-DD'),
+      TO_CHAR(CURRENT_TIMESTAMP + INTERVAL '1 DAY', 'YYYY-MM-DD')
+    );
+    EXECUTE FORMAT(
+      'ALTER TABLE %s SET (AUTOVACUUM_ENABLED = FALSE, TOAST.AUTOVACUUM_ENABLED = FALSE)',
+      audit_table_name
+    );
   END IF;
-  EXECUTE FORMAT('INSERT INTO %s VALUES (($1).*) RETURNING event_id', audit_table_name) INTO inserted_event_id USING audit_row;
-  PERFORM PG_NOTIFY('audit_logged_actions', JSONB_BUILD_OBJECT('audit_table', audit_table_name, 'event_id', inserted_event_id)::TEXT);
+  INSERT INTO audit.logged_actions VALUES (($1).*) RETURNING event_id INTO inserted_event_id USING audit_row;
+  PERFORM PG_NOTIFY('audit_logged_actions', JSONB_BUILD_OBJECT(
+    'action_tstamp_clk', audit_row.action_tstamp_clk,
+    'event_id', inserted_event_id
+  )::TEXT);
 
   RETURN NULL;
 END;
